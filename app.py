@@ -1,64 +1,45 @@
 import streamlit as st
-st.image("AnalyzeLogo.png", width=150)
-st.markdown(
-    """
-    <div style="text-align: center;">
-        <img src="logo.png" width="120">
-        <h1>The Upside RX Analyzer</h1>
-        <p>AI-powered restructuring insights</p>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-st.set_page_config(
-    page_title="RX Analyzer",
-    page_icon="logo.png"
-)
+from openai import OpenAI
+import PyPDF2
+
+# --- CONFIG ---
+st.set_page_config(page_title="RX Analyzer", page_icon="📉", layout="wide")
+
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
+# --- SIDEBAR ---
+st.sidebar.image("AnalyzeLogo.png", width=120)
+st.sidebar.title("RX Analyzer")
+
+page = st.sidebar.radio("Navigate", [
+    "Analyzer",
+    "About"
+])
+
+# --- STYLING ---
 st.markdown("""
 <style>
 body {
-    background-color: #0E1117;
-    color: white;
-}
-</style>
-""", unsafe_allow_html=True)
-from openai import OpenAI
-import PyPDF2
-import os
-
-# --- CONFIG ---
-st.set_page_config(
-    page_title="RX Analyzer",
-    page_icon="📉",
-    layout="wide"
-)
-
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-# --- STYLING (dark + red theme) ---
-st.markdown("""
-<style>
-html, body, [class*="css"] {
     background-color: #0a0a0a;
-    color: #e6e6e6;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-h1, h2, h3 {
-    color: white;
+.block-container {
+    padding-top: 2rem;
+    padding-left: 3rem;
+    padding-right: 3rem;
 }
 
-.stTextArea textarea {
+.card {
     background-color: #141414;
-    color: white;
-    border: 1px solid #2a2a2a;
-    border-radius: 8px;
-    padding: 10px;
+    padding: 20px;
+    border-radius: 12px;
+    border: 1px solid #222;
 }
 
 .stButton button {
     background-color: #e50914;
     color: white;
-    border-radius: 8px;
+    border-radius: 10px;
     height: 45px;
     width: 100%;
     border: none;
@@ -68,32 +49,16 @@ h1, h2, h3 {
 .stButton button:hover {
     background-color: #ff1a1a;
 }
-
-.block-container {
-    padding-top: 2rem;
-    padding-bottom: 2rem;
-    padding-left: 3rem;
-    padding-right: 3rem;
-}
-
-hr {
-    border: 0.5px solid #222;
-}
 </style>
 """, unsafe_allow_html=True)
-
-# --- HEADER ---
-st.markdown("# Distressed Company Analyzer")
-st.markdown("Analyze filings, news, or transcripts for restructuring signals.")
-
-st.markdown("<hr>", unsafe_allow_html=True)
 
 # --- FUNCTIONS ---
 def extract_pdf(file):
     reader = PyPDF2.PdfReader(file)
     text = ""
     for page in reader.pages:
-        text += page.extract_text()
+        if page.extract_text():
+            text += page.extract_text()
     return text
 
 
@@ -107,10 +72,8 @@ def analyze_text(text):
     - Liquidity concerns
     - Signs of distress
     - Likely restructuring path
-    - Fulcrum security (if applicable)
+    - Fulcrum security
     - 3 sharp interview talking points
-
-    Keep it tight and analytical.
 
     Text:
     {text}
@@ -123,41 +86,84 @@ def analyze_text(text):
 
     return response.choices[0].message.content
 
+# =========================
+# PAGE: ANALYZER
+# =========================
+if page == "Analyzer":
 
-# --- LAYOUT ---
-left, right = st.columns([2, 1])
+    st.image("AnalyzeLogo.png", width=80)
 
-with left:
-    st.subheader("Input")
+    st.markdown("""
+    # The Upside RX Analyzer
+    ### AI-powered restructuring insights
+    """)
 
-    uploaded = st.file_uploader("Upload PDF or TXT", type=["pdf", "txt"])
-    text_input = st.text_area("Or paste text", height=200)
+    st.markdown("---")
 
-with right:
-    st.subheader("Run Analysis")
-    run = st.button("Analyze")
+    col1, col2 = st.columns([2, 1])
 
-# --- INPUT HANDLING ---
-content = ""
+    with col1:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
 
-if uploaded:
-    if uploaded.type == "application/pdf":
-        content = extract_pdf(uploaded)
-    else:
-        content = uploaded.read().decode("utf-8")
+        st.subheader("📥 Input")
 
-elif text_input.strip():
-    content = text_input
+        uploaded = st.file_uploader("Upload PDF or TXT", type=["pdf", "txt"])
+        text_input = st.text_area("Or paste text", height=200)
 
-# --- OUTPUT ---
-if run:
-    if content == "":
-        st.warning("Add a file or paste text first.")
-    else:
-        with st.spinner("Processing..."):
-            result = analyze_text(content[:15000])
+        st.markdown('</div>', unsafe_allow_html=True)
 
-        st.markdown("<hr>", unsafe_allow_html=True)
-        st.subheader("Analysis")
+    with col2:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
 
-        st.markdown(result)
+        st.subheader("⚡ Run Analysis")
+        run = st.button("Analyze")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    content = ""
+
+    if uploaded:
+        if uploaded.type == "application/pdf":
+            content = extract_pdf(uploaded)
+        else:
+            content = uploaded.read().decode("utf-8")
+
+    elif text_input.strip():
+        content = text_input
+
+    if run:
+        if content == "":
+            st.warning("Add input first.")
+        else:
+            with st.spinner("Analyzing..."):
+                result = analyze_text(content[:15000])
+
+            st.markdown("---")
+            st.markdown("## 📊 Analysis Output")
+            st.markdown(f'<div class="card">{result}</div>', unsafe_allow_html=True)
+
+# =========================
+# PAGE: ABOUT
+# =========================
+elif page == "About":
+
+    st.image("AnalyzeLogo.png", width=100)
+
+    st.markdown("""
+    # About RX Analyzer
+
+    RX Analyzer is an AI-powered tool designed to simulate how restructuring professionals think.
+
+    ### What it does:
+    - Breaks down distressed companies
+    - Identifies liquidity risks
+    - Suggests restructuring paths
+    - Helps you prep for interviews
+
+    ### Built by:
+    Nikhil Senthil  
+    Finance + Business Analytics @ Indiana University
+
+    ### Vision:
+    Build the go-to platform for restructuring interview prep.
+    """)
