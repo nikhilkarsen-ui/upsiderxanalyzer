@@ -1,259 +1,230 @@
 import streamlit as st
 from openai import OpenAI
 import pdfplumber
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+import datetime
+import yfinance as yf
 
-# --- CONFIG (MUST BE FIRST) ---
-st.set_page_config(page_title="RX Analyzer", page_icon="📉", layout="wide")
-
-# --- LOAD API KEY ---
+# =========================
+# CONFIG
+# =========================
+st.set_page_config(page_title="Upside RX Platform", layout="wide")
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# --- SIDEBAR ---
-st.sidebar.image("AnalyzeLogo.png", width=120)
-st.sidebar.title("RX Analyzer")
-
-page = st.sidebar.radio("Navigate", ["Analyzer", "About"])
-
-# --- STYLING ---
+# =========================
+# STYLING
+# =========================
 st.markdown("""
 <style>
-html, body, [class*="css"] {
-    background-color: #0a0a0a;
-    color: #e6e6e6;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-}
-
-.block-container {
-    padding-top: 2rem;
-    padding-left: 3rem;
-    padding-right: 3rem;
-}
-
-.card {
-    background-color: #141414;
-    padding: 20px;
-    border-radius: 12px;
-    border: 1px solid #222;
-}
-
-.stButton button {
-    background-color: #e50914;
-    color: white;
-    border-radius: 10px;
-    height: 45px;
-    width: 100%;
-    border: none;
-    font-weight: 600;
-}
-
-.stButton button:hover {
-    background-color: #ff1a1a;
-}
+body {background:#0b0f14;color:#e6e6e6;}
+.block-container {padding:2rem 3rem;}
+.card {background:#121821;border:1px solid #1f2a37;padding:15px;border-radius:10px;}
+.stButton button {background:#e50914;color:white;border-radius:6px;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNCTIONS ---
+# =========================
+# DATA FUNCTIONS
+# =========================
 
-def extract_pdf(file):
-    text = ""
-    with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text
-    return text.strip()
+def get_market_data(ticker):
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        financials = stock.financials
 
+        return {
+            "price": info.get("currentPrice", 0),
+            "market_cap": info.get("marketCap", 0),
+            "revenue": financials.loc["Total Revenue"].iloc[0] if "Total Revenue" in financials.index else 0,
+            "net_income": financials.loc["Net Income"].iloc[0] if "Net Income" in financials.index else 0
+        }
+    except:
+        return None
 
-def compute_distress_score(text):
-    text = text.lower()
-    score = 0
+def get_sec_filing(ticker):
+    try:
+        url = f"https://data.sec.gov/submissions/CIK{yf.Ticker(ticker).info['cik_str']:010}.json"
+        headers = {"User-Agent": "NikhilSenthil (nikhil@email.com)"}
+        data = requests.get(url, headers=headers).json()
 
-    if "liquidity" in text: score += 15
-    if "going concern" in text: score += 25
-    if "restructuring" in text: score += 20
-    if "bankruptcy" in text: score += 30
-    if "default" in text: score += 25
-    if "debt" in text: score += 10
-    if "covenant" in text: score += 15
-    if "decline" in text or "down" in text: score += 10
+        filings = data["filings"]["recent"]
+        form = filings["form"][0]
+        accession = filings["accessionNumber"][0].replace("-", "")
+        cik = str(data["cik"]).zfill(10)
 
-    return min(score, 100)
+        filing_url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{accession}-index.html"
+        return filing_url
+    except:
+        return None
 
+def scrape_sec_text(url):
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        soup = BeautifulSoup(requests.get(url, headers=headers).text, "html.parser")
+        return " ".join([p.get_text() for p in soup.find_all("p")])[:15000]
+    except:
+        return ""
 
-def extract_signals(text):
-    signals = []
+# =========================
+# SCORING
+# =========================
+
+def compute_scores(text, data):
     t = text.lower()
 
-    if "liquidity" in t:
-        signals.append("Liquidity pressure")
-    if "debt" in t:
-        signals.append("Highly leveraged")
-    if "restructuring" in t:
-        signals.append("Active restructuring")
-    if "covenant" in t:
-        signals.append("Covenant stress")
-    if "bankruptcy" in t:
-        signals.append("Bankruptcy risk")
+    ai = 50
+    try:
+        r = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role":"user","content":f"Score distress 0-100:\n{text[:3000]}"}]
+        )
+        ai = int(''.join(filter(str.isdigit, r.choices[0].message.content)))
+    except:
+        pass
 
-    return signals
+    signals = sum(v for k,v in {
+        "bankruptcy":40,"default":30,"restructuring":25,"debt":10
+    }.items() if k in t)
 
+    structural = 0
+    if "decline" in t: structural += 20
+    if "loss" in t: structural += 20
 
-def analyze_text(text, mode):
-    if mode == "Creditor Advisory":
-        extra = "Focus heavily on creditor recoveries and downside protection."
-    elif mode == "Investment View":
-        extra = "Focus on where distressed investors can generate returns."
-    else:
-        extra = ""
+    financial = 0
+    if data:
+        if data["net_income"] < 0: financial += 20
 
-    prompt = f"""
-    You are a top-tier restructuring investment banker.
+    total = int(0.4*ai + 0.2*signals + 0.2*structural + 0.2*financial)
 
-    {extra}
-
-    Analyze the company and return STRICTLY in this format:
-
-    ## Situation Overview
-    (2-3 sentences)
-
-    ## Distress Drivers
-    - bullet points
-
-    ## Liquidity Analysis
-    - runway
-    - near-term risks
-
-    ## Capital Structure
-    - where stress sits
-    - likely fulcrum security
-
-    ## Recommended Action
-    - what creditors should do
-    - what equity holders should expect
-
-    ## Restructuring Path
-    - Out-of-court vs Chapter 11
-    - why
-
-    ## Investment Insight
-    - where the opportunity is
-
-    ## Interview Talking Points
-    - 3 sharp bullets
-
-    Be decisive. No fluff.
-
-    Text:
-    {text}
-    """
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    return response.choices[0].message.content
-
+    return ai, signals, structural, financial, total
 
 # =========================
-# PAGE: ANALYZER
+# MODELING
 # =========================
-if page == "Analyzer":
 
-    st.image("AnalyzeLogo.png", width=80)
+def estimate_ev(data):
+    if not data:
+        return 500
+    ev = data["market_cap"]
+    if data["net_income"] < 0:
+        ev *= 0.7
+    return int(ev/1_000_000)
 
-    st.markdown("""
-    # The Upside RX Analyzer
-    ### AI-powered restructuring insights
-    """)
+def cap_structure():
+    return {"Secured":400,"Unsecured":300,"Sub":200}
 
-    st.markdown("---")
-
-    mode = st.selectbox("Analysis Mode", [
-        "Standard Analysis",
-        "Creditor Advisory",
-        "Investment View"
-    ])
-
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("📥 Input")
-
-        uploaded = st.file_uploader("Upload PDF or TXT", type=["pdf", "txt"])
-        text_input = st.text_area("Or paste text", height=200)
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("⚡ Run Analysis")
-        run = st.button("Analyze")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    content = ""
-
-    if uploaded:
-        if uploaded.type == "application/pdf":
-            content = extract_pdf(uploaded)
+def waterfall(ev, struct):
+    remain=ev
+    rec={}
+    for k,v in struct.items():
+        if remain>=v:
+            rec[k]=100
+            remain-=v
+        elif remain>0:
+            rec[k]=int(remain/v*100)
+            remain=0
         else:
-            content = uploaded.read().decode("utf-8")
+            rec[k]=0
+    return rec
 
-    elif text_input.strip():
-        content = text_input
-
-    if run:
-        if not content.strip():
-            st.warning("Add input first.")
-        else:
-            score = compute_distress_score(content)
-            signals = extract_signals(content)
-
-            colA, colB = st.columns(2)
-
-            with colA:
-                st.metric("Distress Score", f"{score}/100")
-
-            with colB:
-                st.metric("Risk Level", "High" if score > 60 else "Moderate")
-
-            if signals:
-                st.markdown("### 🚨 Key Signals")
-                for s in signals:
-                    st.write(f"- {s}")
-
-            with st.spinner("Analyzing..."):
-                result = analyze_text(content[:15000], mode)
-
-            st.markdown("---")
-            st.markdown("## 📊 Analysis Output")
-            st.markdown(f'<div class="card">{result}</div>', unsafe_allow_html=True)
-
-            st.caption("Generated using custom restructuring analysis framework")
+def scenarios(ev):
+    return {"Bear":int(ev*0.6),"Base":ev,"Bull":int(ev*1.4)}
 
 # =========================
-# PAGE: ABOUT
+# UI HEADER
 # =========================
-elif page == "About":
+st.title("Upside RX Platform")
+st.caption("Distressed Investing System")
 
-    st.image("AnalyzeLogo.png", width=100)
+# =========================
+# INPUT
+# =========================
+ticker = st.text_input("Ticker (e.g. WBA)")
+file = st.file_uploader("Upload PDF")
+text = st.text_area("Paste text")
 
-    st.markdown("""
-    # About RX Analyzer
+run = st.button("Run Analysis")
 
-    RX Analyzer is an AI-powered platform designed to simulate how restructuring professionals think.
+# =========================
+# PROCESS
+# =========================
+content = ""
 
-    ### What it does:
-    - Identifies distress signals
-    - Analyzes liquidity risks
-    - Suggests restructuring paths
-    - Provides interview-ready insights
+data = get_market_data(ticker) if ticker else None
 
-    ### Built by:
-    Nikhil Senthil  
-    Finance + Business Analytics @ Indiana University
+if ticker:
+    filing_url = get_sec_filing(ticker)
+    if filing_url:
+        content = scrape_sec_text(filing_url)
 
-    ### Vision:
-    Build the go-to platform for restructuring recruiting.
-    """)
+elif file:
+    content = pdfplumber.open(file).pages[0].extract_text()
+
+elif text:
+    content = text
+
+# =========================
+# OUTPUT
+# =========================
+if run and content:
+
+    ai,sig,struct,fin,score = compute_scores(content, data)
+
+    st.subheader("Risk Dashboard")
+    c1,c2,c3,c4,c5 = st.columns(5)
+    c1.metric("AI", ai)
+    c2.metric("Signals", sig)
+    c3.metric("Structure", struct)
+    c4.metric("Financial", fin)
+    c5.metric("Composite", score)
+
+    st.progress(score/100)
+
+    if data:
+        st.subheader("Market Data")
+        c1,c2,c3 = st.columns(3)
+        c1.metric("Price", f"${data['price']}")
+        c2.metric("Market Cap", f"${data['market_cap']:,}")
+        c3.metric("Revenue", f"${data['revenue']:,}")
+
+        hist = yf.Ticker(ticker).history(period="6mo")
+        st.line_chart(hist["Close"])
+
+    ev = estimate_ev(data)
+    struct = cap_structure()
+    rec = waterfall(ev, struct)
+
+    st.subheader("Recovery Waterfall")
+    df = pd.DataFrame({"Layer":rec.keys(),"Recovery":rec.values()})
+    st.dataframe(df)
+    st.bar_chart(df.set_index("Layer"))
+
+    layer = st.selectbox("Security", list(struct.keys()))
+    price = st.slider("Entry Price",10,100,60)
+
+    scen = scenarios(ev)
+    returns = {k:rec[layer]-price for k in scen}
+
+    st.subheader("Trade Analysis")
+    st.write(returns)
+
+    expected = int(0.3*returns["Bear"]+0.5*returns["Base"]+0.2*returns["Bull"])
+    st.metric("Expected Return", expected)
+
+    if "portfolio" not in st.session_state:
+        st.session_state.portfolio = []
+
+    if st.button("Add Trade"):
+        st.session_state.portfolio.append({
+            "time":datetime.datetime.now(),
+            "return":expected
+        })
+
+    if st.session_state.portfolio:
+        st.subheader("Portfolio")
+        pf = pd.DataFrame(st.session_state.portfolio)
+        st.line_chart(pf.set_index("time"))
+        st.metric("Avg Return", int(pf["return"].mean()))
