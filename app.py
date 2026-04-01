@@ -1,8 +1,9 @@
 import streamlit as st
+import os
 from openai import OpenAI
 
 # --- SET YOUR API KEY ---
-client = OpenAI(api_key="Open_API_Key")
+client = OpenAI( api_key=os.getenv("Open_API_Key") )
 
 # --- ANALYSIS FUNCTION ---
 def analyze_text(text):
